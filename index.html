@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sintonizzatore di Note</title>
+    <!-- Carica Tailwind CSS per uno stile moderno e reattivo -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Configurazione di Tailwind per usare il font Inter
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Stile personalizzato per il cursore dello slider */
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #f97316; /* Arancione Tailwind 500 */
+            cursor: pointer;
+            box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
+        }
+        input[type="range"]::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #f97316;
+            cursor: pointer;
+        }
+        /* Nasconde il cursore di default, lo gestiamo con il CSS */
+        #cents-slider {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            height: 8px;
+            background: #e5e7eb;
+            border-radius: 4px;
+        }
+        /* Centro dello slider (0 cents) */
+        .slider-center::before {
+            content: '';
+            position: absolute;
+            left: 50%;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background-color: #f97316; /* Arancione centrale */
+            transform: translateX(-50%);
+        }
+        /* Stile per l'interfaccia principale che funge da pulsante/stato */
+        #app-container {
+            user-select: none;
+            /* Stile iniziale: aspetto "disattivo" (verde) */
+            background-color: #10b981; /* Verde smeraldo (simula bg-green-600) */
+            color: white;
+            transition: all 0.3s ease;
+        }
+        #app-container.active {
+             /* Quando il microfono è attivo, cambia look in bianco */
+            background-color: #ffffff; /* Sfondo bianco */
+            color: #1f2937; /* Testo grigio scuro */
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+        }
+
+        /* Cursore del mouse gestito dal JS in base allo stato */
+        #app-container.clickable {
+            cursor: pointer;
+        }
+        #app-container.default-cursor {
+            cursor: default;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 flex items-center justify-center min-h-screen p-4 font-sans">
+
+    <!-- L'intero contenitore funge da interruttore -->
+    <div id="app-container" class="w-full max-w-lg shadow-xl rounded-xl p-8 transition-all duration-300 clickable">
+
+        <div id="app-content" class="text-center">
+
+            <!-- Il blocco della nota funge da CTA iniziale e poi da display principale -->
+            <div id="note-block" class="relative inline-block px-8 py-4 bg-indigo-600 text-white rounded-xl shadow-lg transform transition-all duration-300 scale-100 w-full hover:shadow-xl hover:scale-[1.01]">
+                <span id="note-name" class="text-4xl font-extrabold transition-opacity duration-500">Attiva il microfono 🎤</span>
+            </div>
+
+            <!-- Dettagli Tecnici (VISIBILI SEMPRE) -->
+            <div id="technical-details" class="mt-6 pt-4 border-t border-gray-100">
+
+                <!-- Stato Attivo/Inattivo -->
+                <h1 id="status-title" class="text-xl font-extrabold text-gray-900 transition-colors duration-300 mb-4">
+                    Microfono disattivato
+                </h1>
+
+                <!-- Frequenza e Info Extra -->
+                <p id="frequency-display" class="text-xl font-medium text-gray-700 mt-4">
+                    Frequenza: <span class="font-bold">0.00 Hz</span>
+                </p>
+                <p id="target-note-display" class="text-sm text-gray-500 mt-1"></p>
+
+                <!-- Sezione di Precisione (Cents) -->
+                <div id="cents-section" class="mt-8 pt-4 border-t border-gray-200">
+                    <h2 class="text-lg font-semibold text-gray-800 mb-4">Precisione (Cents)</h2>
+                    <div class="relative h-8 flex items-center">
+                        <!-- Marker del Centro (0 Cents) -->
+                        <div class="slider-center absolute w-full h-1 bg-gray-300 rounded-full"></div>
+                        <!-- Slider -->
+                        <input type="range" id="cents-slider" min="-50" max="50" value="0" step="0.1" disabled class="relative z-10">
+
+                        <!-- Etichette Cents -->
+                        <div class="absolute w-full flex justify-between top-full text-xs text-gray-500 mt-1">
+                            <span>-50 Cents (Calante)</span>
+                            <span id="cents-value" class="font-bold text-gray-900 absolute left-1/2 transform -translate-x-1/2 -mt-7 bg-white px-2 rounded-full shadow">0 Cents</span>
+                            <span>+50 Cents (Crescente)</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- Fine Dettagli Tecnici -->
+
+        </div>
+
+        <!-- Area per Messaggi di Errore -->
+        <p id="error-message" class="text-red-500 text-center mt-4 hidden"></p>
+
+    </div>
+
+    <script type="module">
+        let audioContext;
+        let analyser;
+        let mediaStreamSource;
+        let rafID = null;
+
+        // Parametri per il rilevamento del pitch
+        const MIN_FREQ = 80;
+        const MAX_FREQ = 1200;
+        const NOTE_STRINGS = ["Do", "Do#", "Re", "Re#", "Mi", "Fa", "Fa#", "Sol", "Sol#", "La", "La#", "Si"];
+        const A4 = 440;
+        const A4_NOTE_INDEX = 69;
+        const CORRELATION_THRESHOLD = 0.9;
+
+        // Variabili per la logica di stato (silenzio/canto)
+        let noteTimeout = null;
+        let isSinging = false;
+        let isMicrophoneActive = false;
+        const NOTE_HOLD_DURATION = 3000; // La nota rimane fissa per 3 secondi
+
+        // Elementi DOM
+        const appContainer = document.getElementById('app-container');
+        const noteBlock = document.getElementById('note-block');
+        const noteNameElement = document.getElementById('note-name');
+        const technicalDetails = document.getElementById('technical-details');
+        const statusTitle = document.getElementById('status-title');
+        const frequencyElement = document.getElementById('frequency-display').querySelector('span');
+        const centsSlider = document.getElementById('cents-slider');
+        const centsValueElement = document.getElementById('cents-value');
+        const targetNoteElement = document.getElementById('target-note-display');
+        const errorMessageElement = document.getElementById('error-message');
+
+        // --- Funzioni di Rilevamento Pitch ---
+
+        /**
+         * Funzione per rilevare il pitch utilizzando l'Autocorrelazione
+         */
+        function autoCorrelate(buffer, sampleRate) {
+            const bufferSize = buffer.length;
+            let bestOffset = -1;
+            let bestCorrelation = 0;
+            const rms = Math.sqrt(buffer.reduce((sum, val) => sum + val * val, 0) / bufferSize);
+
+            // Soglia minima di volume
+            if (rms < 0.01) {
+                return 0;
+            }
+
+            const minPeriod = sampleRate / MAX_FREQ;
+            const maxPeriod = sampleRate / MIN_FREQ;
+
+            for (let offset = minPeriod; offset <= maxPeriod; offset++) {
+                let correlation = 0;
+                for (let i = 0; i < bufferSize - offset; i++) {
+                    correlation += buffer[i] * buffer[i + offset];
+                }
+
+                const normalizationFactor = bufferSize - offset;
+                if (normalizationFactor > 0) {
+                    correlation /= normalizationFactor;
+                }
+
+                if (correlation > bestCorrelation) {
+                    bestCorrelation = correlation;
+                    bestOffset = offset;
+                }
+            }
+
+            const power = buffer.reduce((sum, val) => sum + val * val, 0) / bufferSize;
+            if (power > 0) {
+                 bestCorrelation /= power;
+            }
+
+            if (bestCorrelation > CORRELATION_THRESHOLD && bestOffset !== -1) {
+                return sampleRate / bestOffset;
+            }
+
+            return 0;
+        }
+
+        /**
+         * Converte la frequenza in Hz nel nome della nota, ottava e deviazione in cents.
+         */
+        function getNoteInfo(frequency) {
+            const nTotal = A4_NOTE_INDEX + 12 * (Math.log(frequency / A4) / Math.log(2));
+            const closestN = Math.round(nTotal);
+            const idealFreq = A4 * Math.pow(2, (closestN - A4_NOTE_INDEX) / 12);
+            const cents = 1200 * (Math.log(frequency / idealFreq) / Math.log(2));
+            const noteIndex = closestN % 12;
+            const octave = Math.floor((closestN + 3) / 12) - 1;
+
+            return {
+                note: NOTE_STRINGS[noteIndex],
+                octave: octave,
+                idealFreq: idealFreq,
+                cents: cents
+            };
+        }
+
+        // --- Logica di Aggiornamento UI e Audio Tuner ---
+
+        /**
+         * Funzione per impostare lo stato del display quando la nota è RILEVATA.
+         */
+        function setNoteDisplayDetected(noteColor = 'bg-indigo-600') {
+            noteBlock.classList.remove('bg-gray-400');
+            noteBlock.classList.add(noteColor);
+
+            noteNameElement.classList.remove('text-gray-900', 'text-4xl', 'font-extrabold');
+            noteNameElement.classList.add('text-white', 'text-7xl', 'font-black');
+            noteBlock.classList.remove('w-full', 'py-10');
+            noteBlock.classList.add('w-auto');
+        }
+
+        /**
+         * Funzione per impostare lo stato di ascolto attivo (microfono ON, ma silenzio).
+         */
+        function setNoteDisplayListening() {
+            noteBlock.classList.remove('bg-indigo-600');
+            noteBlock.classList.add('bg-gray-400'); // Grigio per "In ascolto..."
+
+            noteNameElement.classList.remove('text-white', 'text-7xl', 'font-black');
+            noteNameElement.classList.add('text-gray-900', 'text-4xl', 'font-extrabold');
+            noteNameElement.textContent = 'In ascolto...';
+
+            noteBlock.classList.remove('w-full', 'py-10'); // Ritorna alle dimensioni normali
+            noteBlock.classList.add('w-auto');
+
+            // Resetta i valori tecnici
+            frequencyElement.textContent = '0.00 Hz';
+            targetNoteElement.textContent = '';
+            centsSlider.value = 0;
+            centsValueElement.textContent = '0 Cents';
+            centsValueElement.style.left = '50%';
+        }
+
+        /**
+         * Funzione per impostare lo stato iniziale (Inattivo) al caricamento e allo spegnimento.
+         */
+        function setAppInactive() {
+            isMicrophoneActive = false;
+
+            // Container: CTA style (green background)
+            appContainer.classList.remove('active', 'default-cursor');
+            appContainer.classList.add('clickable');
+            appContainer.style.backgroundColor = '#10b981';
+
+            // Note Block: Funge da pulsante di attivazione (CTA)
+            noteBlock.classList.add('bg-indigo-600', 'w-full', 'py-10');
+            noteBlock.classList.remove('bg-gray-400');
+
+            noteNameElement.textContent = 'Attiva il microfono 🎤';
+            noteNameElement.classList.remove('text-gray-900', 'text-7xl', 'font-black');
+            noteNameElement.classList.add('text-white', 'text-4xl', 'font-extrabold');
+
+            // Technical Details: Visibili ma con stato e colori corretti per lo sfondo verde
+            statusTitle.textContent = 'Microfono disattivato';
+            statusTitle.classList.remove('text-gray-900');
+            statusTitle.classList.add('text-white');
+
+            // Resetta i valori tecnici
+            frequencyElement.textContent = '0.00 Hz';
+            targetNoteElement.textContent = '';
+            centsSlider.value = 0;
+            centsValueElement.textContent = '0 Cents';
+            centsValueElement.style.left = '50%';
+            errorMessageElement.classList.add('hidden');
+        }
+
+
+        /**
+         * Funzione principale per l'aggiornamento continuo del pitch.
+         */
+        function updatePitch() {
+            if (!isMicrophoneActive) return;
+
+            const buffer = new Float32Array(analyser.fftSize);
+            analyser.getFloatTimeDomainData(buffer);
+
+            const frequency = autoCorrelate(buffer, audioContext.sampleRate);
+
+            if (frequency > 0) {
+                // VOCE RILEVATA
+                if (noteTimeout) {
+                    clearTimeout(noteTimeout);
+                    noteTimeout = null;
+                }
+
+                if (!isSinging) {
+                    isSinging = true;
+                    setNoteDisplayDetected();
+                }
+
+                const noteInfo = getNoteInfo(frequency);
+
+                // Aggiorna solo il nome della nota, senza l'ottava
+                noteNameElement.textContent = noteInfo.note;
+
+                // Aggiorna la frequenza effettiva
+                frequencyElement.textContent = `${frequency.toFixed(2)} Hz`;
+
+                // Aggiorna l'etichetta della nota ideale (ottava inclusa per contesto)
+                targetNoteElement.textContent = `(Nota ideale: ${noteInfo.note}${noteInfo.octave} a ${noteInfo.idealFreq.toFixed(2)} Hz)`;
+
+                // Aggiorna lo slider dei cents
+                const centsValue = Math.max(-50, Math.min(50, noteInfo.cents));
+                centsSlider.value = centsValue;
+
+                centsValueElement.textContent = `${centsValue.toFixed(1)} Cents`;
+                const percentPosition = ((centsValue + 50) / 100) * 100;
+                centsValueElement.style.left = `${percentPosition}%`;
+
+            } else {
+                // SILENZIO/RUMORE DI FONDO
+
+                if (isSinging && !noteTimeout) {
+                    // La voce si è interrotta, avvia il timer di 3 secondi
+                    noteTimeout = setTimeout(() => {
+                        isSinging = false;
+                        setNoteDisplayListening();
+                        noteTimeout = null;
+                    }, NOTE_HOLD_DURATION);
+                }
+
+                // Se non sta cantando e non c'è un timeout attivo, mostra "In ascolto..."
+                if (!isSinging && !noteTimeout) {
+                    setNoteDisplayListening();
+                }
+            }
+
+            rafID = window.requestAnimationFrame(updatePitch);
+        }
+
+        /**
+         * Avvia l'acquisizione del microfono e l'analisi audio.
+         */
+        async function startMicrophone() {
+            // Rimuove il cursore pointer durante l'avvio
+            appContainer.classList.remove('clickable');
+            appContainer.classList.add('default-cursor');
+            appContainer.style.pointerEvents = 'none';
+            noteNameElement.textContent = "Avvio...";
+
+            try {
+                // Inizializza l'AudioContext (se non è già attivo)
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+                mediaStreamSource = audioContext.createMediaStreamSource(stream);
+                analyser = audioContext.createAnalyser();
+
+                analyser.fftSize = 2048;
+                mediaStreamSource.connect(analyser);
+
+                isMicrophoneActive = true;
+                updatePitch();
+
+                // Aggiorna l'interfaccia utente allo stato attivo (contenitore diventa bianco)
+                appContainer.classList.add('active');
+                appContainer.style.backgroundColor = 'white';
+
+                // Aggiorna lo stato del titolo nell'area tecnica (testo nero per sfondo bianco)
+                statusTitle.textContent = "Microfono attivo ✅";
+                statusTitle.classList.remove('text-white');
+                statusTitle.classList.add('text-gray-900');
+
+                // Imposta lo stato "In ascolto"
+                setNoteDisplayListening();
+
+                // Riabilita il clic per lo spegnimento e reimposta il cursore
+                appContainer.style.pointerEvents = 'auto';
+                appContainer.classList.remove('default-cursor');
+                appContainer.classList.add('clickable');
+
+            } catch (err) {
+                console.error("Errore nell'accesso al microfono:", err);
+
+                // Resetta l'interfaccia in caso di errore
+                appContainer.style.pointerEvents = 'auto';
+                errorMessageElement.textContent = `Impossibile accedere al microfono. Errore: ${err.name}.`;
+                errorMessageElement.classList.remove('hidden');
+
+                // Torna allo stato Inattivo (CTA)
+                setAppInactive();
+            }
+        }
+
+        /**
+         * Ferma l'analisi audio e rilascia il microfono.
+         */
+        function stopMicrophone() {
+            isMicrophoneActive = false;
+
+            if (rafID) {
+                window.cancelAnimationFrame(rafID);
+                rafID = null;
+            }
+            if (mediaStreamSource) {
+                mediaStreamSource.mediaStream.getTracks().forEach(track => track.stop());
+                mediaStreamSource = null;
+            }
+            if (audioContext) {
+                 // Chiudiamo l'audioContext dato che non viene più usato per la tastiera
+                 audioContext.close();
+                 audioContext = null;
+            }
+
+            // Resetta lo stato dell'interfaccia utente al modo iniziale (CTA)
+            isSinging = false;
+            if (noteTimeout) {
+                clearTimeout(noteTimeout);
+                noteTimeout = null;
+            }
+
+            setAppInactive();
+        }
+
+        // Gestore unificato del clic per l'attivazione/disattivazione del microfono
+        appContainer.addEventListener('click', () => {
+            if (!isMicrophoneActive) {
+                startMicrophone();
+            } else {
+                stopMicrophone();
+            }
+        });
+
+        // Esegui la configurazione iniziale per impostare lo stato Inattivo al caricamento
+        window.onload = function() {
+            setAppInactive();
+        }
+
+    </script>
+</body>
+</html>
